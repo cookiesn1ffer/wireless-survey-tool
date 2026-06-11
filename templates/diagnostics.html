@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics — WireSurvey{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Diagnostics</h1>
+</div>
+
+<div class="row">
+  <!-- Interface info -->
+  <div class="col">
+    <div class="card">
+      <div class="card-title">Interface Info
+        <button class="btn btn-sm" id="iface-refresh-btn" style="float:right;margin-top:-2px">↻ Refresh</button>
+      </div>
+      <div id="iface-info">
+        <span class="spinner"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Speedtest -->
+  <div class="col">
+    <div class="card">
+      <div class="card-title">Speedtest</div>
+      <p style="font-size:0.82rem;color:var(--muted);margin-bottom:0.75rem">
+        Runs speedtest-cli. Takes ~30–60 s on Pi Zero.
+      </p>
+      <button id="speed-btn" class="btn-primary">▶ Run Speedtest</button>
+      <div id="speed-result" style="margin-top:0.75rem;font-size:0.85rem;color:var(--muted)"></div>
+    </div>
+  </div>
+</div>
+
+<div class="row">
+  <!-- Ping -->
+  <div class="col">
+    <div class="card">
+      <div class="card-title">Ping</div>
+      <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
+        <input type="text" id="ping-host" value="8.8.8.8" placeholder="Host or IP" style="flex:1;min-width:120px"/>
+        <input type="text" id="ping-count" value="8" placeholder="count" style="width:60px;text-align:center"/>
+        <button id="ping-btn" class="btn-primary">Ping</button>
+      </div>
+      <div id="ping-result" style="font-size:0.83rem;color:var(--muted)">–</div>
+      <pre id="ping-raw" style="margin-top:0.75rem;display:none"></pre>
+    </div>
+  </div>
+
+  <!-- DNS -->
+  <div class="col">
+    <div class="card">
+      <div class="card-title">DNS Lookup</div>
+      <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem">
+        <input type="text" id="dns-host" value="google.com" placeholder="Hostname" style="flex:1"/>
+        <button id="dns-btn" class="btn-primary">Lookup</button>
+      </div>
+      <div id="dns-result" style="font-size:0.83rem;color:var(--muted)">–</div>
+    </div>
+  </div>
+</div>
+
+<!-- Traceroute -->
+<div class="card">
+  <div class="card-title">Traceroute</div>
+  <div style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
+    <input type="text" id="trace-host" value="8.8.8.8" placeholder="Host or IP" style="width:220px"/>
+    <button id="trace-btn" class="btn-primary">Trace</button>
+    <span id="trace-spinner" style="display:none;align-self:center"><span class="spinner"></span> Running…</span>
+  </div>
+  <div class="tbl-wrap" id="trace-wrap" style="display:none">
+    <table>
+      <thead>
+        <tr><th>#</th><th>IP</th><th>RTT (avg)</th><th>Status</th></tr>
+      </thead>
+      <tbody id="trace-tbody"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Interface info ──
+async function loadIfaceInfo() {
+  const el = document.getElementById('iface-info');
+  el.innerHTML = '<span class="spinner"></span>';
+  const r = await fetch('/api/interface');
+  const d = await r.json();
+  el.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat"><div class="stat-label">SSID</div>
+        <div class="stat-value" style="font-size:1rem">${d.connected_ssid ?? '—'}</div></div>
+      <div class="stat"><div class="stat-label">IP / Mask</div>
+        <div class="stat-value mono" style="font-size:0.9rem">${d.ip ?? '—'}</div></div>
+      <div class="stat"><div class="stat-label">Gateway</div>
+        <div class="stat-value mono" style="font-size:0.9rem">${d.gateway ?? '—'}</div></div>
+      <div class="stat"><div class="stat-label">DNS</div>
+        <div class="stat-value mono" style="font-size:0.85rem">${(d.dns ?? []).join(', ')}</div></div>
+      <div class="stat"><div class="stat-label">Link Speed</div>
+        <div class="stat-value">${d.link_speed_mbps != null ? d.link_speed_mbps+' Mbps' : '—'}</div></div>
+      <div class="stat"><div class="stat-label">RX / TX</div>
+        <div class="stat-value" style="font-size:0.85rem">${d.rx_fmt} / ${d.tx_fmt}</div></div>
+    </div>`;
+}
+document.getElementById('iface-refresh-btn').addEventListener('click', loadIfaceInfo);
+loadIfaceInfo();
+
+// ── Ping ──
+document.getElementById('ping-btn').addEventListener('click', async () => {
+  const host  = document.getElementById('ping-host').value.trim() || '8.8.8.8';
+  const count = parseInt(document.getElementById('ping-count').value) || 8;
+  const result = document.getElementById('ping-result');
+  const raw    = document.getElementById('ping-raw');
+  result.innerHTML = '<span class="spinner"></span> Pinging…';
+  raw.style.display = 'none';
+  const r = await fetch(`/api/ping?host=${encodeURIComponent(host)}&count=${count}`);
+  const d = await r.json();
+  if (d.success) {
+    const lossColor = d.loss_pct > 0 ? 'var(--red)' : 'var(--green)';
+    result.innerHTML = `
+      <span style="color:var(--green)">✓ Reachable</span> &nbsp;·&nbsp;
+      Avg <b>${d.rtt_avg} ms</b> &nbsp;·&nbsp;
+      Min <b>${d.rtt_min} ms</b> &nbsp;·&nbsp;
+      Max <b>${d.rtt_max} ms</b> &nbsp;·&nbsp;
+      Loss <b style="color:${lossColor}">${d.loss_pct}%</b>
+      (${d.received}/${d.sent} packets)`;
+  } else {
+    result.innerHTML = `<span style="color:var(--red)">✗ ${d.error || 'Host unreachable'}</span>`;
+  }
+  if (d.raw) {
+    raw.textContent = d.raw;
+    raw.style.display = 'block';
+  }
+});
+
+// ── DNS ──
+document.getElementById('dns-btn').addEventListener('click', async () => {
+  const host = document.getElementById('dns-host').value.trim() || 'google.com';
+  const el = document.getElementById('dns-result');
+  el.innerHTML = '<span class="spinner"></span> Resolving…';
+  const r = await fetch(`/api/dns?host=${encodeURIComponent(host)}`);
+  const d = await r.json();
+  if (d.success) {
+    el.innerHTML = `
+      <span style="color:var(--green)">✓</span>
+      <b>${host}</b> resolved in <b>${d.elapsed_ms} ms</b><br/>
+      <span style="color:var(--muted);font-size:0.8rem">${d.ips.join(' &nbsp;·&nbsp; ')}</span>`;
+  } else {
+    el.innerHTML = `<span style="color:var(--red)">✗ ${d.error || 'Resolution failed'}</span>`;
+  }
+});
+
+// ── Traceroute ──
+document.getElementById('trace-btn').addEventListener('click', async () => {
+  const host    = document.getElementById('trace-host').value.trim() || '8.8.8.8';
+  const wrap    = document.getElementById('trace-wrap');
+  const spinner = document.getElementById('trace-spinner');
+  const tbody   = document.getElementById('trace-tbody');
+  wrap.style.display = 'none';
+  spinner.style.display = 'inline-flex';
+  tbody.innerHTML = '';
+  const r = await fetch(`/api/traceroute?host=${encodeURIComponent(host)}`);
+  const d = await r.json();
+  spinner.style.display = 'none';
+  if (!d.success || !d.hops.length) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--red)">${d.error || 'No hops'}</td></tr>`;
+  } else {
+    tbody.innerHTML = d.hops.map(h => {
+      let cls, label;
+      if (!h.rtt)           { cls = 'hop-none'; label = '* * *'; }
+      else if (h.rtt < 50)  { cls = 'hop-good'; label = `${h.rtt} ms`; }
+      else if (h.rtt < 150) { cls = 'hop-ok';   label = `${h.rtt} ms`; }
+      else                  { cls = 'hop-slow';  label = `${h.rtt} ms`; }
+      return `<tr>
+        <td style="color:var(--muted)">${h.hop}</td>
+        <td class="mono">${h.ip}</td>
+        <td class="${cls}">${label}</td>
+        <td>${h.rtt
+          ? (h.rtt<50 ? '<span class="badge badge-green">Fast</span>'
+            : h.rtt<150 ? '<span class="badge badge-yellow">OK</span>'
+            : '<span class="badge badge-red">Slow</span>')
+          : '<span class="badge badge-muted">Timeout</span>'}</td>
+      </tr>`;
+    }).join('');
+  }
+  wrap.style.display = 'block';
+});
+
+// ── Speedtest ──
+let speedRunning = false;
+let speedPoll;
+document.getElementById('speed-btn').addEventListener('click', async () => {
+  if (speedRunning) return;
+  speedRunning = true;
+  const btn = document.getElementById('speed-btn');
+  const res = document.getElementById('speed-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ Running…';
+  res.innerHTML = '<span class="spinner"></span> This takes ~30–60 s on Pi Zero…';
+  await fetch('/api/speedtest/start', { method: 'POST' });
+
+  speedPoll = setInterval(async () => {
+    const r = await fetch('/api/speedtest/status');
+    const d = await r.json();
+    if (!d.running && d.result) {
+      clearInterval(speedPoll);
+      speedRunning = false;
+      btn.disabled = false;
+      btn.textContent = '▶ Run Speedtest';
+      const s = d.result;
+      if (s.success) {
+        res.innerHTML = `
+          <div class="stat-grid" style="margin-top:0.25rem">
+            <div class="stat"><div class="stat-label">Download</div>
+              <div class="stat-value" style="color:var(--green)">${s.download_mbps} <span style="font-size:0.75rem">Mbps</span></div></div>
+            <div class="stat"><div class="stat-label">Upload</div>
+              <div class="stat-value" style="color:var(--accent)">${s.upload_mbps} <span style="font-size:0.75rem">Mbps</span></div></div>
+            <div class="stat"><div class="stat-label">Ping</div>
+              <div class="stat-value">${s.ping_ms} <span style="font-size:0.75rem">ms</span></div></div>
+          </div>`;
+      } else {
+        res.innerHTML = `<span style="color:var(--red)">✗ ${s.error}</span>`;
+      }
+    } else if (d.running) {
+      res.innerHTML = `<span class="spinner"></span> Running… (${d.elapsed}s)`;
+    }
+  }, 3000);
+});
+</script>
+{% endblock %}

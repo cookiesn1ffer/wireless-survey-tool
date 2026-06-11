@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Scanner — WireSurvey{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Wi-Fi Scanner</h1>
+    <div class="meta" id="scan-meta">Scanning…</div>
+  </div>
+  <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+    <button id="export-btn">⬇ Export CSV</button>
+    <span id="export-msg" style="font-size:0.78rem;color:var(--green);align-self:center"></span>
+  </div>
+</div>
+
+<!-- Filters -->
+<div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1rem;align-items:center">
+  <input type="text" id="filter-ssid" placeholder="Filter by SSID…" style="width:220px" />
+  <select id="filter-band" style="background:var(--bg3);border:1px solid var(--border);
+    border-radius:6px;color:var(--text);padding:0.45rem 0.75rem;font-size:0.85rem">
+    <option value="">All bands</option>
+    <option value="2.4 GHz">2.4 GHz</option>
+    <option value="5 GHz">5 GHz</option>
+  </select>
+  <select id="filter-sec" style="background:var(--bg3);border:1px solid var(--border);
+    border-radius:6px;color:var(--text);padding:0.45rem 0.75rem;font-size:0.85rem">
+    <option value="">All security</option>
+    <option value="WPA2">WPA2</option>
+    <option value="WPA">WPA</option>
+    <option value="Open">Open</option>
+  </select>
+  <span id="network-count" style="font-size:0.8rem;color:var(--muted);margin-left:auto"></span>
+</div>
+
+<div class="card" style="padding:0">
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>SSID</th>
+          <th>BSSID</th>
+          <th>Band</th>
+          <th>Ch</th>
+          <th>Security</th>
+          <th>Quality</th>
+          <th>Signal</th>
+        </tr>
+      </thead>
+      <tbody id="scanner-tbody">
+        <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem">
+          Waiting for first scan…
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allNetworks = [];
+
+async function refresh() {
+  const [netsR, metaR] = await Promise.all([
+    fetch('/api/networks'), fetch('/api/scan/meta')
+  ]);
+  allNetworks = await netsR.json();
+  const meta = await metaR.json();
+
+  let msg = `${meta.count} network${meta.count !== 1 ? 's' : ''} · Last scan ${meta.last_scan_fmt}`;
+  if (meta.error) msg += ` · <span style="color:var(--red)">${meta.error}</span>`;
+  document.getElementById('scan-meta').innerHTML = msg;
+
+  renderTable();
+}
+
+function renderTable() {
+  const ssidQ  = document.getElementById('filter-ssid').value.toLowerCase();
+  const bandQ  = document.getElementById('filter-band').value;
+  const secQ   = document.getElementById('filter-sec').value;
+
+  const filtered = allNetworks.filter(n =>
+    (!ssidQ || n.ssid.toLowerCase().includes(ssidQ)) &&
+    (!bandQ || n.band === bandQ) &&
+    (!secQ  || n.security === secQ)
+  );
+
+  document.getElementById('network-count').textContent =
+    `Showing ${filtered.length} / ${allNetworks.length}`;
+
+  const tbody = document.getElementById('scanner-tbody');
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:2rem">
+      No networks match filters.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(n => {
+    const q = n.quality ?? 0;
+    const color = sigColor(n.rssi);
+    return `
+      <tr>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500"
+            title="${n.ssid}">${n.ssid}</td>
+        <td class="mono" style="color:var(--muted);font-size:0.78rem">${n.bssid}</td>
+        <td>${bandBadge(n.band)}</td>
+        <td style="color:var(--muted)">${n.channel}</td>
+        <td>${securityBadge(n.security)}</td>
+        <td>${qualityBadge(n.quality_label)}</td>
+        <td>
+          <div class="sig-bar-wrap">
+            <div class="sig-bar-bg">
+              <div class="sig-bar" style="width:${q}%;background:${color}"></div>
+            </div>
+            <span style="color:${color};font-size:0.78rem;white-space:nowrap;min-width:60px">${n.rssi} dBm</span>
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+// Filters
+['filter-ssid','filter-band','filter-sec'].forEach(id =>
+  document.getElementById(id).addEventListener('input', renderTable)
+);
+
+// CSV export
+document.getElementById('export-btn').addEventListener('click', async () => {
+  const r = await fetch('/api/export/csv');
+  const d = await r.json();
+  const msg = document.getElementById('export-msg');
+  msg.textContent = `Saved ${d.count} networks → ${d.file}`;
+  setTimeout(() => msg.textContent = '', 5000);
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+{% endblock %}

@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — WireSurvey{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Dashboard</h1>
+    <div class="meta">Live overview · updates every 5 s</div>
+  </div>
+</div>
+
+<!-- Stat row -->
+<div class="stat-grid" style="margin-bottom:1rem;">
+  <div class="stat">
+    <div class="stat-label">Networks Found</div>
+    <div class="stat-value" id="stat-count">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Strongest Signal</div>
+    <div class="stat-value" id="stat-best-rssi" style="font-size:1rem">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Connected To</div>
+    <div class="stat-value" id="stat-ssid" style="font-size:0.95rem">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">IP Address</div>
+    <div class="stat-value mono" id="stat-ip" style="font-size:0.95rem">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Gateway</div>
+    <div class="stat-value mono" id="stat-gw" style="font-size:0.95rem">—</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Last Scan</div>
+    <div class="stat-value" id="stat-scan-time" style="font-size:0.95rem">—</div>
+  </div>
+</div>
+
+<div class="row">
+  <!-- Top networks -->
+  <div class="col" style="min-width:320px; flex:2">
+    <div class="card">
+      <div class="card-title">Top 10 Networks</div>
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>SSID</th><th>Band</th><th>Ch</th>
+              <th>Security</th><th>Signal</th>
+            </tr>
+          </thead>
+          <tbody id="top-networks-body">
+            <tr><td colspan="5" style="color:var(--muted);text-align:center">Scanning…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Channel usage -->
+  <div class="col" style="min-width:260px; flex:1">
+    <div class="card">
+      <div class="card-title">Channel Usage</div>
+      <canvas id="channel-chart" height="220"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Quick ping -->
+<div class="card">
+  <div class="card-title">Quick Ping</div>
+  <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem">
+    <input type="text" id="ping-host" value="8.8.8.8" placeholder="host or IP" style="width:200px"/>
+    <button id="ping-btn" class="btn-primary">Ping</button>
+  </div>
+  <div id="ping-result" style="font-size:0.85rem;color:var(--muted)">Enter a host and click Ping.</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let channelChart = null;
+
+async function refreshNetworks() {
+  const [netsR, metaR, ifaceR, chanR] = await Promise.all([
+    fetch('/api/networks'), fetch('/api/scan/meta'),
+    fetch('/api/interface'), fetch('/api/channels')
+  ]);
+  const nets  = await netsR.json();
+  const meta  = await metaR.json();
+  const iface = await ifaceR.json();
+  const chans = await chanR.json();
+
+  // Stats
+  document.getElementById('stat-count').textContent = meta.count ?? '—';
+  document.getElementById('stat-scan-time').textContent = meta.last_scan_fmt ?? '—';
+  document.getElementById('stat-ssid').textContent = iface.connected_ssid ?? '—';
+  document.getElementById('stat-ip').textContent   = iface.ip ?? '—';
+  document.getElementById('stat-gw').textContent   = iface.gateway ?? '—';
+  if (nets.length) {
+    const best = nets[0];
+    document.getElementById('stat-best-rssi').innerHTML =
+      `<span style="color:${sigColor(best.rssi)}">${best.rssi} dBm</span>
+       <span style="font-size:0.7rem;color:var(--muted);margin-left:4px">${best.ssid}</span>`;
+  }
+
+  // Top 10 table
+  const tbody = document.getElementById('top-networks-body');
+  tbody.innerHTML = '';
+  nets.slice(0, 10).forEach(n => {
+    const q = n.quality ?? 0;
+    const color = sigColor(n.rssi);
+    tbody.innerHTML += `
+      <tr>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${n.ssid}">${n.ssid}</td>
+        <td>${bandBadge(n.band)}</td>
+        <td>${n.channel}</td>
+        <td>${securityBadge(n.security)}</td>
+        <td>
+          <div class="sig-bar-wrap">
+            <div class="sig-bar-bg">
+              <div class="sig-bar" style="width:${q}%;background:${color}"></div>
+            </div>
+            <span style="color:${color};font-size:0.78rem;white-space:nowrap">${n.rssi} dBm</span>
+          </div>
+        </td>
+      </tr>`;
+  });
+
+  // Channel chart
+  const labels = chans.map(c => `Ch ${c.channel}`);
+  const counts = chans.map(c => c.count);
+  if (!channelChart) {
+    const ctx = document.getElementById('channel-chart').getContext('2d');
+    channelChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Networks',
+          data: counts,
+          backgroundColor: 'rgba(88,166,255,0.6)',
+          borderColor: '#58a6ff',
+          borderWidth: 1,
+          borderRadius: 4,
+        }]
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+          y: { ticks: { color: '#8b949e', stepSize: 1 }, grid: { color: '#21262d' }, beginAtZero: true }
+        }
+      }
+    });
+  } else {
+    channelChart.data.labels = labels;
+    channelChart.data.datasets[0].data = counts;
+    channelChart.update('none');
+  }
+}
+
+// Ping
+document.getElementById('ping-btn').addEventListener('click', async () => {
+  const host = document.getElementById('ping-host').value.trim() || '8.8.8.8';
+  const el = document.getElementById('ping-result');
+  el.innerHTML = '<span class="spinner"></span> Pinging…';
+  try {
+    const r = await fetch(`/api/ping?host=${encodeURIComponent(host)}&count=4`);
+    const d = await r.json();
+    if (d.success) {
+      el.innerHTML = `
+        <span style="color:var(--green)">✓</span>
+        ${host} · avg <b>${d.rtt_avg} ms</b> · min ${d.rtt_min} · max ${d.rtt_max} ms
+        · loss <b style="color:${d.loss_pct>0?'var(--red)':'var(--green)'}">${d.loss_pct}%</b>`;
+    } else {
+      el.innerHTML = `<span style="color:var(--red)">✗ ${d.error || 'Host unreachable'}</span>`;
+    }
+  } catch {
+    el.innerHTML = `<span style="color:var(--red)">Request failed</span>`;
+  }
+});
+
+refreshNetworks();
+setInterval(refreshNetworks, 5000);
+</script>
+{% endblock %}

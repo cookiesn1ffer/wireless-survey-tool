@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Signal History — WireSurvey{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Signal History</h1>
+    <div class="meta">RSSI over time · 5-second resolution · last {{ "120" }} readings</div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:1rem">
+  <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center">
+    <label style="font-size:0.85rem;color:var(--muted)">Track SSID:</label>
+    <select id="ssid-select" style="background:var(--bg3);border:1px solid var(--border);
+      border-radius:6px;color:var(--text);padding:0.45rem 0.75rem;font-size:0.85rem;flex:1;max-width:360px">
+      <option value="">— select a network —</option>
+      {% for ssid in ssids %}
+      <option value="{{ ssid }}">{{ ssid }}</option>
+      {% endfor %}
+    </select>
+    <button id="add-btn" class="btn-primary">+ Track</button>
+    <button id="clear-btn">Clear</button>
+  </div>
+</div>
+
+<div id="charts-container"></div>
+
+<div id="no-tracks" class="card" style="text-align:center;color:var(--muted);padding:3rem">
+  Select a network above and click Track to start plotting its signal history.
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const tracked = {};   // ssid → { chart, canvas, card }
+const COLORS = ['#58a6ff','#3fb950','#bc8cff','#d29922','#f0883e','#f85149'];
+let colorIdx = 0;
+
+function getColor() {
+  return COLORS[colorIdx++ % COLORS.length];
+}
+
+function addTrack(ssid) {
+  if (!ssid || tracked[ssid]) return;
+  document.getElementById('no-tracks').style.display = 'none';
+
+  const color = getColor();
+  const card  = document.createElement('div');
+  card.className = 'card';
+  card.style.marginBottom = '1rem';
+  card.innerHTML = `
+    <div class="card-title" style="display:flex;justify-content:space-between">
+      <span>${ssid}</span>
+      <button class="btn btn-sm remove-btn" data-ssid="${ssid}">✕ Remove</button>
+    </div>
+    <div style="display:flex;gap:1rem;margin-bottom:0.75rem;flex-wrap:wrap">
+      <span id="stat-cur-${CSS.escape(ssid)}" style="font-size:0.85rem;color:var(--muted)">–</span>
+      <span id="stat-min-${CSS.escape(ssid)}" style="font-size:0.85rem;color:var(--muted)">–</span>
+      <span id="stat-max-${CSS.escape(ssid)}" style="font-size:0.85rem;color:var(--muted)">–</span>
+      <span id="stat-avg-${CSS.escape(ssid)}" style="font-size:0.85rem;color:var(--muted)">–</span>
+    </div>
+    <canvas id="chart-${CSS.escape(ssid)}" height="120"></canvas>`;
+  document.getElementById('charts-container').appendChild(card);
+
+  card.querySelector('.remove-btn').addEventListener('click', e => {
+    removeTrack(e.currentTarget.dataset.ssid);
+  });
+
+  const ctx = document.getElementById(`chart-${CSS.escape(ssid)}`).getContext('2d');
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: ssid,
+        data: [],
+        borderColor: color,
+        backgroundColor: color + '22',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b949e', maxTicksLimit: 6 }, grid: { color: '#21262d' } },
+        y: {
+          min: -100, max: -30,
+          ticks: { color: '#8b949e', callback: v => v + ' dBm' },
+          grid: { color: '#21262d' }
+        }
+      }
+    }
+  });
+
+  tracked[ssid] = { chart, card, color };
+  fetchHistory(ssid);
+}
+
+function removeTrack(ssid) {
+  if (!tracked[ssid]) return;
+  tracked[ssid].chart.destroy();
+  tracked[ssid].card.remove();
+  delete tracked[ssid];
+  if (!Object.keys(tracked).length)
+    document.getElementById('no-tracks').style.display = '';
+}
+
+async function fetchHistory(ssid) {
+  if (!tracked[ssid]) return;
+  try {
+    const r = await fetch(`/api/history/${encodeURIComponent(ssid)}`);
+    const pts = await r.json();
+    if (!pts.length) return;
+
+    const labels = pts.map(p => {
+      const d = new Date(p.t);
+      return d.getHours().toString().padStart(2,'0') + ':' +
+             d.getMinutes().toString().padStart(2,'0') + ':' +
+             d.getSeconds().toString().padStart(2,'0');
+    });
+    const values = pts.map(p => p.rssi);
+
+    const ch = tracked[ssid].chart;
+    ch.data.labels = labels;
+    ch.data.datasets[0].data = values;
+    ch.update('none');
+
+    const last = values[values.length - 1];
+    const min  = Math.min(...values);
+    const max  = Math.max(...values);
+    const avg  = (values.reduce((a,b) => a+b, 0) / values.length).toFixed(1);
+    const color = sigColor(last);
+    const esc = CSS.escape(ssid);
+
+    document.getElementById(`stat-cur-${esc}`).innerHTML =
+      `Current: <b style="color:${color}">${last} dBm</b>`;
+    document.getElementById(`stat-min-${esc}`).innerHTML =
+      `Min: <b style="color:var(--red)">${min} dBm</b>`;
+    document.getElementById(`stat-max-${esc}`).innerHTML =
+      `Max: <b style="color:var(--green)">${max} dBm</b>`;
+    document.getElementById(`stat-avg-${esc}`).innerHTML =
+      `Avg: <b>${avg} dBm</b>`;
+  } catch {}
+}
+
+// Refresh all tracked
+setInterval(() => Object.keys(tracked).forEach(fetchHistory), 5000);
+
+document.getElementById('add-btn').addEventListener('click', () => {
+  addTrack(document.getElementById('ssid-select').value);
+});
+
+document.getElementById('clear-btn').addEventListener('click', () => {
+  Object.keys(tracked).forEach(removeTrack);
+});
+
+// Update SSID list periodically (new networks may appear)
+async function refreshSSIDs() {
+  try {
+    const r = await fetch('/api/networks');
+    const nets = await r.json();
+    const sel = document.getElementById('ssid-select');
+    const existing = new Set([...sel.options].map(o => o.value));
+    nets.forEach(n => {
+      if (!existing.has(n.ssid) && n.ssid !== '<hidden>') {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = n.ssid;
+        sel.appendChild(opt);
+      }
+    });
+  } catch {}
+}
+setInterval(refreshSSIDs, 15000);
+</script>
+{% endblock %}
